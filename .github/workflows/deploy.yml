@@ -1,0 +1,104 @@
+name: Deploy to ECS (Fargate)
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_FRONTEND: netsol-frontend
+  ECR_BACKEND: netsol-backend
+  CLUSTER: netsol-cluster
+  FRONTEND_SERVICE: frontend-service
+  BACKEND_SERVICE: backend-service
+  FRONTEND_TASK_FAMILY: frontend-task
+  BACKEND_TASK_FAMILY: backend-task
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS creds
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tags
+        id: vars
+        run: |
+          echo "TAG=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+          echo "FRONTEND_URI=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_FRONTEND }}" >> $GITHUB_OUTPUT
+          echo "BACKEND_URI=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_BACKEND }}" >> $GITHUB_OUTPUT
+
+      - name: Build & push FRONTEND
+        run: |
+          docker build -t ${{ steps.vars.outputs.FRONTEND_URI }}:${{ steps.vars.outputs.TAG }} ./frontend
+          docker push ${{ steps.vars.outputs.FRONTEND_URI }}:${{ steps.vars.outputs.TAG }}
+
+      - name: Build & push BACKEND
+        run: |
+          docker build -t ${{ steps.vars.outputs.BACKEND_URI }}:${{ steps.vars.outputs.TAG }} ./backend
+          docker push ${{ steps.vars.outputs.BACKEND_URI }}:${{ steps.vars.outputs.TAG }}
+
+      - name: Get current FRONTEND task def
+        id: get_frontend_td
+        run: |
+          aws ecs describe-task-definition --task-definition ${{ env.FRONTEND_TASK_FAMILY }} \
+            --query 'taskDefinition' > frontend-td.json
+
+      - name: Get current BACKEND task def
+        id: get_backend_td
+        run: |
+          aws ecs describe-task-definition --task-definition ${{ env.BACKEND_TASK_FAMILY }} \
+            --query 'taskDefinition' > backend-td.json
+
+      - name: Patch images in task defs
+        run: |
+          # Strip fields AWS forbids on register
+          jq 'del(.taskDefinitionArn, .requiresAttributes, .compatibilities, .revision, .status, .registeredBy, .registeredAt)' frontend-td.json > frontend-tmp.json
+          jq 'del(.taskDefinitionArn, .requiresAttributes, .compatibilities, .revision, .status, .registeredBy, .registeredAt)' backend-td.json > backend-tmp.json
+
+          # Update images
+          jq --arg IMG "${{ steps.vars.outputs.FRONTEND_URI }}:${{ steps.vars.outputs.TAG }}" \
+             '.containerDefinitions |= map(if .name=="frontend" then .image=$IMG else . end)' \
+            frontend-tmp.json > frontend-new.json
+
+          jq --arg IMG "${{ steps.vars.outputs.BACKEND_URI }}:${{ steps.vars.outputs.TAG }}" \
+             '.containerDefinitions |= map(if .name=="backend" then .image=$IMG else . end)' \
+            backend-tmp.json > backend-new.json
+
+      - name: Register new FRONTEND task def
+        id: reg_frontend
+        run: |
+          arn=$(aws ecs register-task-definition --cli-input-json file://frontend-new.json --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "TD_ARN=$arn" >> $GITHUB_OUTPUT
+
+      - name: Register new BACKEND task def
+        id: reg_backend
+        run: |
+          arn=$(aws ecs register-task-definition --cli-input-json file://backend-new.json --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "TD_ARN=$arn" >> $GITHUB_OUTPUT
+
+      - name: Update FRONTEND service
+        run: |
+          aws ecs update-service --cluster ${{ env.CLUSTER }} \
+            --service ${{ env.FRONTEND_SERVICE }} \
+            --task-definition ${{ steps.reg_frontend.outputs.TD_ARN }} \
+            --force-new-deployment
+
+      - name: Update BACKEND service
+        run: |
+          aws ecs update-service --cluster ${{ env.CLUSTER }} \
+            --service ${{ env.BACKEND_SERVICE }} \
+            --task-definition ${{ steps.reg_backend.outputs.TD_ARN }} \
+            --force-new-deployment
