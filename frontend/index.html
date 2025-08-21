@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Docker Two-Containers</title>
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .container { min-height: 100%; display: flex; align-items: center; justify-content: center; background: #f7f7f7; padding: 2rem; }
+    .card { background: #fff; padding: 2rem 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); max-width: 560px; width: 100%; text-align: center; }
+    h1 { font-size: 2rem; margin: 0 0 1rem 0; font-weight: 600; letter-spacing: 0.2px; }
+    button { font-size: 1rem; padding: 0.8rem 1.2rem; border-radius: 10px; border: 1px solid rgba(0,0,0,0.08); cursor: pointer; margin: 0.3rem; transition: transform 0.06s ease, box-shadow 0.12s ease; }
+    button:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,0.08); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
+    .muted { color: #666; font-size: 0.95rem; }
+    .error { color: red; font-weight: 500; }
+    input { padding: 0.6rem; border-radius: 8px; border: 1px solid #ccc; margin-bottom: 1rem; width: 80%; font-size: 1rem; }
+    .loading { display: inline-block; width: 18px; height: 18px; border: 3px solid rgba(0,0,0,0.1); border-left-color: #333; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    ul { list-style-type: none; padding: 0; margin-top: 1rem; text-align: left; }
+    ul li { background: #f0f0f0; margin: 4px 0; padding: 6px 10px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1 id="helloLine">Hello <span id="name">Guest</span></h1>
+    <p id="dateTime" class="muted"></p>
+    <input type="text" id="nameInput" placeholder="Enter a name (optional)" />
+    <p id="responseTime" class="muted"></p>
+    <p class="muted">Click the button or press Enter to call the backend. If no name is entered, it will use the default from the server's environment variable.</p>
+    <button id="btn">Get response from backend</button>
+    <button id="showNamesBtn">Show Stored Names</button>
+    <p id="status" class="muted" style="margin-top:1rem;"></p>
+    <ul id="namesList"></ul>
+  </div>
+</div>
+
+<script>
+  const btn = document.getElementById('btn');
+  const showNamesBtn = document.getElementById('showNamesBtn');
+  const nameSpan = document.getElementById('name');
+  const timeP = document.getElementById('responseTime');
+  const statusP = document.getElementById('status');
+  const dateTimeP = document.getElementById('dateTime');
+  const nameInput = document.getElementById('nameInput');
+  const namesList = document.getElementById('namesList');
+
+  const API_URL = '/api/hello';
+  const NAMES_URL = '/api/names';
+
+  function updateDateTime() {
+    dateTimeP.textContent = `Current Date & Time: ${new Date().toLocaleString()}`;
+  }
+  updateDateTime();
+  setInterval(updateDateTime, 1000);
+
+  async function fetchGreeting() {
+    statusP.innerHTML = '<span class="loading"></span> Calling backend...';
+    btn.disabled = true;
+    const startTime = performance.now();
+    const enteredName = nameInput.value.trim();
+    const query = enteredName ? `?name=${encodeURIComponent(enteredName)}` : '';
+
+    try {
+      const res = await fetch(`${API_URL}${query}`);
+      const endTime = performance.now();
+      const elapsed = Math.round(endTime - startTime);
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      nameSpan.textContent = data.name || 'Guest';
+      timeP.textContent = `Response time: ${elapsed} ms`;
+      statusP.textContent = '✅ Success.';
+      statusP.classList.remove('error');
+    } catch (err) {
+      statusP.textContent = '❌ Error: ' + err.message;
+      statusP.classList.add('error');
+      timeP.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function fetchNamesList() {
+    statusP.innerHTML = '<span class="loading"></span> Loading names...';
+    try {
+      const res = await fetch(NAMES_URL);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      namesList.innerHTML = '';
+      data.storedNames.forEach(n => {
+        const li = document.createElement('li');
+        li.textContent = n;
+        namesList.appendChild(li);
+      });
+
+      statusP.textContent = `✅ Loaded ${data.storedNames.length} names.`;
+      statusP.classList.remove('error');
+    } catch (err) {
+      statusP.textContent = '❌ Error loading names: ' + err.message;
+      statusP.classList.add('error');
+    }
+  }
+
+  btn.addEventListener('click', fetchGreeting);
+  showNamesBtn.addEventListener('click', fetchNamesList);
+  nameInput.addEventListener('keyup', e => { if (e.key === 'Enter') fetchGreeting(); });
+</script>
+</body>
+</html>
